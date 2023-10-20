@@ -4,7 +4,7 @@ use std::{
     io::{self, Cursor},
 };
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
 };
 
@@ -15,9 +15,16 @@ async fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
     loop {
-        let (socket, _) = listener.accept().await?;
-
-        process_socket(socket).await?;
+        match listener.accept().await {
+            Ok((socket, _)) => {
+                tokio::spawn(async move {
+                    process_socket(socket).await;
+                });
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+            }
+        }
     }
 }
 
@@ -47,6 +54,22 @@ impl Connection {
         todo!();
     }
 
+    pub async fn get_line(&mut self) -> String {
+        let (reader, _) = self.stream.split();
+        let mut buf_read = BufReader::new(reader);
+
+        let mut buf = String::new();
+
+        let _line = buf_read.read_line(&mut buf).await;
+
+        buf
+
+        // match line {
+        //     Ok(line) => buf,
+        //     Err(_e) => String::new(),
+        // }
+    }
+
     pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
         self.write_value(frame).await?;
 
@@ -56,6 +79,7 @@ impl Connection {
     async fn write_value(&mut self, frame: &Frame) -> io::Result<()> {
         match frame {
             Frame::Simple(val) => {
+                println!("write: {}", val);
                 self.stream.write_u8(b'+').await?;
                 self.stream.write_all(val.as_bytes()).await?;
                 self.stream.write_all(b"\r\n").await?;
@@ -67,14 +91,29 @@ impl Connection {
     }
 }
 
-async fn process_socket(socket: TcpStream) -> io::Result<()> {
-    // println!("Socket: {:?}", socket);
+async fn process_socket(mut socket: TcpStream) -> anyhow::Result<()> {
+    let (reader, mut writer) = socket.split();
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
 
-    let mut connection = Connection::new(socket);
+    while reader.read_line(&mut line).await? > 0 {
+        if line.to_ascii_uppercase().starts_with("PING") {
+            writer.write_all(b"+PONG\r\n").await?;
+        }
+        line.clear();
+    }
+    // Ok(()) // println!("Socket: {:?}", socket);
 
-    let pong_frame = Frame::Simple("PONG".to_string());
+    // let mut connection = Connection::new(socket);
 
-    connection.write_frame(&pong_frame).await?;
+    // let mut line = connection.get_line().await;
 
+    // println!("Line: {}", line);
+
+    // while line.len() > 0 {
+    //     let simple_frame = Frame::Simple("PONG".to_string());
+    //     connection.write_frame(&simple_frame).await?;
+    //     line.clear()
+    // }
     Ok(())
 }
