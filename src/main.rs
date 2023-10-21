@@ -1,12 +1,19 @@
-use bytes::BytesMut;
+mod commands;
+mod frame;
+
+use bytes::{Buf, BytesMut};
 use std::{
     error::Error,
     io::{self, Cursor},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
 };
+
+use frame::Frame;
+
+use crate::commands::Command;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -30,12 +37,7 @@ async fn main() -> io::Result<()> {
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
-enum Frame {
-    Simple(String),
-    Error(String),
-}
-
-struct Connection {
+pub struct Connection {
     stream: TcpStream,
     buffer: BytesMut,
 }
@@ -48,26 +50,43 @@ impl Connection {
         }
     }
 
-    pub fn read_frame(&self) -> Result<Option<Frame>> {
+    pub async fn read_frame(&mut self) -> Result<Frame> {
+        loop {
+            println!("Wait");
+            self.stream.readable().await?;
+            println!("Read");
+            match self.stream.try_read_buf(&mut self.buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    self.buffer.truncate(n);
+                    break;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    println!("Read: WouldBlock");
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
+        }
+
         let mut buf = Cursor::new(&self.buffer[..]);
 
-        todo!();
-    }
+        loop {
+            // Prevent get_u8 panic
+            if !buf.has_remaining() {
+                continue;
+            }
+            break;
+        }
 
-    pub async fn get_line(&mut self) -> String {
-        let (reader, _) = self.stream.split();
-        let mut buf_read = BufReader::new(reader);
+        println!("Buf: {:?}", self.buffer);
+        let frame = Frame::parse(&mut buf)?;
 
-        let mut buf = String::new();
+        println!("Frame: {}", frame);
 
-        let _line = buf_read.read_line(&mut buf).await;
-
-        buf
-
-        // match line {
-        //     Ok(line) => buf,
-        //     Err(_e) => String::new(),
-        // }
+        Ok(frame)
     }
 
     pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
@@ -79,41 +98,51 @@ impl Connection {
     async fn write_value(&mut self, frame: &Frame) -> io::Result<()> {
         match frame {
             Frame::Simple(val) => {
-                println!("write: {}", val);
                 self.stream.write_u8(b'+').await?;
                 self.stream.write_all(val.as_bytes()).await?;
                 self.stream.write_all(b"\r\n").await?;
             }
+            Frame::Bulk(data) => {
+                let len = data.len();
+                self.stream.write_u8(b'$').await?;
+                self.write_decimal(len as u64).await?;
+                self.stream.write_all(data).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Array(_) => todo!(),
             Frame::Error(_) => todo!(),
+            Frame::Integer(_) => todo!(),
         }
+
+        Ok(())
+    }
+
+    async fn write_decimal(&mut self, val: u64) -> io::Result<()> {
+        use std::io::Write;
+
+        // Convert the value to a string
+        let mut buf = [0u8; 20];
+        let mut buf = Cursor::new(&mut buf[..]);
+        write!(&mut buf, "{}", val)?;
+
+        let pos = buf.position() as usize;
+        self.stream.write_all(&buf.get_ref()[..pos]).await?;
+        self.stream.write_all(b"\r\n").await?;
 
         Ok(())
     }
 }
 
-async fn process_socket(mut socket: TcpStream) -> anyhow::Result<()> {
-    let (reader, mut writer) = socket.split();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
+async fn process_socket(socket: TcpStream) -> Result<()> {
+    let mut connection = Connection::new(socket);
 
-    while reader.read_line(&mut line).await? > 0 {
-        if line.to_ascii_uppercase().starts_with("PING") {
-            writer.write_all(b"+PONG\r\n").await?;
-        }
-        line.clear();
+    loop {
+        println!("Buf: {:?}", connection.buffer);
+
+        let frame = connection.read_frame().await?;
+
+        let command = Command::from_frame(frame)?;
+
+        command.apply(&mut connection).await?;
     }
-    // Ok(()) // println!("Socket: {:?}", socket);
-
-    // let mut connection = Connection::new(socket);
-
-    // let mut line = connection.get_line().await;
-
-    // println!("Line: {}", line);
-
-    // while line.len() > 0 {
-    //     let simple_frame = Frame::Simple("PONG".to_string());
-    //     connection.write_frame(&simple_frame).await?;
-    //     line.clear()
-    // }
-    Ok(())
 }
