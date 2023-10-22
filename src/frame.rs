@@ -6,6 +6,7 @@ pub enum Frame {
     Simple(String),
     Bulk(Bytes),
     Integer(u64),
+    Null,
     Array(Vec<Frame>),
     Error(String),
 }
@@ -18,6 +19,10 @@ pub enum Error {
 
 impl Frame {
     pub fn parse(src: &mut Cursor<&[u8]>) -> Result<Frame, Error> {
+        if !src.has_remaining() {
+            return Err(Error::Incomplete);
+        }
+
         let byte = src.get_u8();
 
         println!("xxx: {:?}", std::str::from_utf8(&[byte]));
@@ -30,9 +35,12 @@ impl Frame {
 
                 let mut out = Vec::with_capacity(len);
 
-                for _ in 0..len {
+                for i in 0..len {
+                    println!("===== GOT FRAME: {}", i);
                     out.push(Frame::parse(src)?);
                 }
+
+                println!("GOT FRAME");
 
                 Ok(Frame::Array(out))
             }
@@ -47,12 +55,24 @@ impl Frame {
 
                 let len = get_number(src)? as usize;
 
+                println!("Bulk: OK");
+                if src.remaining() < len + 2 {
+                    println!("REMANING!!!!!!");
+                    return Err(Error::Incomplete);
+                }
+
                 let data = Bytes::copy_from_slice(&src.chunk()[..len]);
 
+                println!("Bulk: data {:?}", data);
+                if src.remaining() < len + 2 {
+                    println!("REMANING!!!!!!");
+                    return Err(Error::Incomplete);
+                }
+
                 src.advance(len + 2);
+                println!("Bulk: After advance");
 
                 Ok(Frame::Bulk(data))
-                // todo!()
             }
 
             b'-' => {
@@ -78,7 +98,6 @@ pub fn get_line<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
         if src.get_ref()[i] == b'\r' && src.get_ref()[i + 1] == b'\n' {
             src.set_position((i + 2) as u64);
             let line = &src.get_ref()[start..i];
-            println!("Line: {:?}", line);
             return Ok(line);
         }
     }
@@ -104,7 +123,7 @@ impl fmt::Display for Frame {
                 Ok(string) => string.fmt(fmt),
                 Err(_) => write!(fmt, "{:?}", msg),
             },
-            // Frame::Null => "(nil)".fmt(fmt),
+            Frame::Null => "(nil)".fmt(fmt),
             Frame::Array(parts) => {
                 for (i, part) in parts.iter().enumerate() {
                     if i > 0 {
@@ -155,3 +174,7 @@ impl fmt::Display for Error {
         }
     }
 }
+
+// b"*3\r\n$3\r\nget\r\n$6\r\nhorses\r\n$7\r\noranges\r\n"
+
+// b"*3\r\n$3\r\nset\r\n$6\r\nhorses\r\n$7\r\noranges\r\n"

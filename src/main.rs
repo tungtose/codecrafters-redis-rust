@@ -1,7 +1,9 @@
 mod commands;
+mod db;
 mod frame;
 
 use bytes::{Buf, BytesMut};
+use db::Db;
 use std::{
     error::Error,
     io::{self, Cursor},
@@ -13,19 +15,23 @@ use tokio::{
 
 use frame::Frame;
 
-use crate::commands::Command;
+use commands::Command;
+
+pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    let db = Db::new();
 
     loop {
         match listener.accept().await {
             Ok((socket, _)) => {
+                let mut db = db.clone();
                 tokio::spawn(async move {
-                    process_socket(socket).await;
+                    process_socket(socket, &mut db).await;
                 });
             }
             Err(err) => {
@@ -34,8 +40,6 @@ async fn main() -> io::Result<()> {
         }
     }
 }
-
-pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 pub struct Connection {
     stream: TcpStream,
@@ -52,9 +56,7 @@ impl Connection {
 
     pub async fn read_frame(&mut self) -> Result<Frame> {
         loop {
-            println!("Wait");
             self.stream.readable().await?;
-            println!("Read");
             match self.stream.try_read_buf(&mut self.buffer) {
                 Ok(0) => break,
                 Ok(n) => {
@@ -76,14 +78,13 @@ impl Connection {
         loop {
             // Prevent get_u8 panic
             if !buf.has_remaining() {
+                println!("HAS REMAINING");
                 continue;
             }
             break;
         }
 
-        println!("Buf: {:?}", self.buffer);
         let frame = Frame::parse(&mut buf)?;
-
         println!("Frame: {}", frame);
 
         Ok(frame)
@@ -107,6 +108,11 @@ impl Connection {
                 self.stream.write_u8(b'$').await?;
                 self.write_decimal(len as u64).await?;
                 self.stream.write_all(data).await?;
+                self.stream.write_all(b"\r\n").await?;
+            }
+            Frame::Null => {
+                self.stream.write_u8(b'+').await?;
+                self.stream.write_all("NIL".as_bytes()).await?;
                 self.stream.write_all(b"\r\n").await?;
             }
             Frame::Array(_) => todo!(),
@@ -133,16 +139,17 @@ impl Connection {
     }
 }
 
-async fn process_socket(socket: TcpStream) -> Result<()> {
+async fn process_socket(socket: TcpStream, db: &mut Db) -> Result<()> {
     let mut connection = Connection::new(socket);
 
     loop {
-        println!("Buf: {:?}", connection.buffer);
+        // println!("Buf: {:?}", connection.buffer);
 
         let frame = connection.read_frame().await?;
 
         let command = Command::from_frame(frame)?;
 
-        command.apply(&mut connection).await?;
+        command.apply(&mut connection, db).await?;
     }
+    // Ok(())
 }
