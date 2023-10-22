@@ -29,6 +29,8 @@ impl Get {
             None => Frame::Null,
         };
 
+        println!("EXEC APPLY GET");
+
         conn.write_frame(&response).await?;
 
         Ok(())
@@ -53,6 +55,8 @@ impl Set {
         db.set(&self.key, self.value.clone());
 
         let response = Frame::Simple("OK".to_string());
+
+        println!("EXEC APPLY SET");
 
         conn.write_frame(&response).await?;
 

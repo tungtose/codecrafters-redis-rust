@@ -25,37 +25,24 @@ impl Frame {
 
         let byte = src.get_u8();
 
-        println!("xxx: {:?}", std::str::from_utf8(&[byte]));
         match byte {
             b'*' => {
-                println!("Got Array");
-                // let len = Connection::get_line(&mut buf)?;
                 let len = get_number(src)? as usize;
-                println!("Len: {}", len);
-
                 let mut out = Vec::with_capacity(len);
 
                 for i in 0..len {
-                    println!("===== GOT FRAME: {}", i);
                     out.push(Frame::parse(src)?);
                 }
-
-                println!("GOT FRAME");
-
                 Ok(Frame::Array(out))
             }
 
             b'+' => {
-                println!("Got simple");
                 todo!()
             }
 
             b'$' => {
-                println!("Got bulk");
-
                 let len = get_number(src)? as usize;
 
-                println!("Bulk: OK");
                 if src.remaining() < len + 2 {
                     println!("REMANING!!!!!!");
                     return Err(Error::Incomplete);
@@ -63,14 +50,12 @@ impl Frame {
 
                 let data = Bytes::copy_from_slice(&src.chunk()[..len]);
 
-                println!("Bulk: data {:?}", data);
                 if src.remaining() < len + 2 {
                     println!("REMANING!!!!!!");
                     return Err(Error::Incomplete);
                 }
 
                 src.advance(len + 2);
-                println!("Bulk: After advance");
 
                 Ok(Frame::Bulk(data))
             }

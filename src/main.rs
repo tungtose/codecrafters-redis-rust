@@ -2,14 +2,14 @@ mod commands;
 mod db;
 mod frame;
 
-use bytes::{Buf, BytesMut};
+use bytes::BytesMut;
 use db::Db;
 use std::{
     error::Error,
     io::{self, Cursor},
 };
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
@@ -54,40 +54,24 @@ impl Connection {
         }
     }
 
-    pub async fn read_frame(&mut self) -> Result<Frame> {
-        loop {
-            self.stream.readable().await?;
-            match self.stream.try_read_buf(&mut self.buffer) {
-                Ok(0) => break,
-                Ok(n) => {
-                    self.buffer.truncate(n);
-                    break;
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    println!("Read: WouldBlock");
-                    continue;
-                }
-                Err(e) => {
-                    return Err(e.into());
-                }
-            }
+    pub async fn read_frame(&mut self) -> Result<Option<Frame>> {
+        let read = self.stream.read_buf(&mut self.buffer).await?;
+
+        println!("DBG: {:?}", self.buffer);
+
+        if read == 0 {
+            return Ok(None);
         }
 
         let mut buf = Cursor::new(&self.buffer[..]);
 
-        loop {
-            // Prevent get_u8 panic
-            if !buf.has_remaining() {
-                println!("HAS REMAINING");
-                continue;
-            }
-            break;
-        }
-
         let frame = Frame::parse(&mut buf)?;
+
+        self.buffer.clear();
+
         println!("Frame: {}", frame);
 
-        Ok(frame)
+        Ok(Some(frame))
     }
 
     pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
@@ -143,13 +127,19 @@ async fn process_socket(socket: TcpStream, db: &mut Db) -> Result<()> {
     let mut connection = Connection::new(socket);
 
     loop {
-        // println!("Buf: {:?}", connection.buffer);
-
         let frame = connection.read_frame().await?;
 
-        let command = Command::from_frame(frame)?;
+        match frame {
+            Some(frame) => {
+                let command = Command::from_frame(frame)?;
 
-        command.apply(&mut connection, db).await?;
+                command.apply(&mut connection, db).await?;
+            }
+            None => {
+                break;
+            }
+        }
     }
-    // Ok(())
+
+    Ok(())
 }
