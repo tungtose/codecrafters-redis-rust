@@ -95,9 +95,7 @@ impl Connection {
                 self.stream.write_all(b"\r\n").await?;
             }
             Frame::Null => {
-                self.stream.write_u8(b'+').await?;
-                self.stream.write_all("NIL".as_bytes()).await?;
-                self.stream.write_all(b"\r\n").await?;
+                self.stream.write_all(b"$-1\r\n").await?;
             }
             Frame::Array(_) => todo!(),
             Frame::Error(_) => todo!(),

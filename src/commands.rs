@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use std::vec;
+use std::{time::Duration, vec};
 
 use crate::{db::Db, frame::Frame, Connection};
 
@@ -18,7 +18,7 @@ pub struct Get {
 
 impl Get {
     fn parse_frames(frames: &mut vec::IntoIter<Frame>) -> crate::Result<Get> {
-        let key = frames.next_string()?;
+        let key = frames.next_string().unwrap();
 
         Ok(Get { key })
     }
@@ -41,18 +41,27 @@ impl Get {
 pub struct Set {
     key: String,
     value: Bytes,
+    expire: Option<Duration>,
 }
 
 impl Set {
     fn parse_frames(frames: &mut vec::IntoIter<Frame>) -> crate::Result<Set> {
-        let key = frames.next_string()?;
+        let key = frames.next_string().unwrap();
         let value = frames.next_bytes()?;
 
-        Ok(Set { key, value })
+        let mut expire = None;
+
+        if let Some(_expire_type) = frames.next_string() {
+            if let Ok(e) = frames.next_int() {
+                expire = Some(Duration::from_millis(e));
+            }
+        }
+
+        Ok(Set { key, value, expire })
     }
 
     pub async fn apply(&self, conn: &mut Connection, db: &mut Db) -> crate::Result<()> {
-        db.set(&self.key, self.value.clone());
+        db.set(&self.key, self.value.clone(), self.expire);
 
         let response = Frame::Simple("OK".to_string());
 
@@ -105,7 +114,7 @@ impl Command {
             _ => unreachable!(),
         };
 
-        let name = frame_iter.next_string()?;
+        let name = frame_iter.next_string().unwrap();
 
         let command = match &name[..] {
             "ping" => Command::Ping(Ping),
@@ -130,7 +139,8 @@ impl Command {
 
 pub trait FrameIter {
     fn next_bytes(&mut self) -> crate::Result<Bytes>;
-    fn next_string(&mut self) -> crate::Result<String>;
+    fn next_string(&mut self) -> Option<String>;
+    fn next_int(&mut self) -> crate::Result<u64>;
 }
 
 impl FrameIter for std::vec::IntoIter<Frame> {
@@ -147,21 +157,41 @@ impl FrameIter for std::vec::IntoIter<Frame> {
         Ok(bytes)
     }
 
-    fn next_string(&mut self) -> crate::Result<String> {
+    fn next_string(&mut self) -> Option<String> {
+        if let Some(frame) = self.next() {
+            let string = match frame {
+                Frame::Simple(s) => s,
+                Frame::Bulk(data) => std::str::from_utf8(&data[..])
+                    .map(|s| s.to_string())
+                    .unwrap(),
+                Frame::Integer(_) => todo!(),
+                Frame::Array(_) => todo!(),
+                Frame::Error(_) => todo!(),
+                Frame::Null => todo!(),
+            };
+
+            Some(string)
+        } else {
+            None
+        }
+    }
+
+    fn next_int(&mut self) -> crate::Result<u64> {
         let frame = self.next().unwrap();
 
-        let string = match frame {
-            Frame::Simple(s) => s,
+        // let num = std::str::from_utf8(line).unwrap().parse::<u64>().unwrap();
+
+        let int = match frame {
+            Frame::Simple(s) => s.parse::<u64>().unwrap(),
             Frame::Bulk(data) => std::str::from_utf8(&data[..])
-                .map(|s| s.to_string())
-                // .map_err(|_| "invalid string".into())
+                .map(|s| s.parse::<u64>().unwrap())
                 .unwrap(),
-            Frame::Integer(_) => todo!(),
+            Frame::Integer(int) => int,
             Frame::Array(_) => todo!(),
             Frame::Error(_) => todo!(),
             Frame::Null => todo!(),
         };
 
-        Ok(string)
+        Ok(int)
     }
 }
